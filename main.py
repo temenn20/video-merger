@@ -10,33 +10,25 @@ app = Flask(__name__)
 UPLOAD_FOLDER = '/tmp'
 
 def extract_drive_id(url_or_id):
-    """Gelen WebViewLink, WebContentLink veya File ID içerisinden saf ID'yi çeker."""
     if not url_or_id:
         return None
-    # Eğer gelen veri direkt bir Drive URL'si ise ID'yi regex ile yakala
     match = re.search(r'/d/([a-zA-Z0-9_-]+)', url_or_id)
     if match:
         return match.group(1)
-    # URL parametresi olarak 'id=' şeklinde geldiyse
     match_id = re.search(r'id=([a-zA-Z0-9_-]+)', url_or_id)
     if match_id:
         return match_id.group(1)
-    # Zaten ham ID olarak geldiyse direkt kendisini dön
     return url_or_id
 
 def download_file(video_param, destination):
-    """Google Drive engellerini aşarak videoyu sunucuya indirir."""
     file_id = extract_drive_id(video_param)
     if not file_id:
         return False
         
-    # Doğrudan indirme bağlantısını oluşturuyoruz
     download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    
     session = requests.Session()
     response = session.get(download_url, stream=True)
     
-    # Büyük dosyalar için Google Drive onay mekanizmasını geçme
     for key, value in response.cookies.items():
         if key.startswith('download_warning'):
             download_url += f"&confirm={value}"
@@ -58,38 +50,41 @@ def process_media():
     output_path = os.path.join(UPLOAD_FOLDER, f"output_{session_id}.mp4")
 
     try:
-        # 1. Google Drive Linki veya ID'sini al (WebViewLink dahil)
-        video_url = request.form.get('video_url') or request.args.get('video_url')
-        if not video_url and request.is_json:
-            video_url = request.json.get('video_url')
+        data = request.get_json(silent=True) or {}
+        video_url = data.get('video_url') or request.form.get('video_url')
+        audio_url = data.get('audio_url') or request.form.get('audio_url')
 
         if not video_url:
-            return jsonify({"status": "error", "message": "video_url parametresi bulunamadı!"}), 400
+            return jsonify({"status": "error", "message": "video_url bulunamadı!"}), 400
 
-        print(f"[{session_id}] Video indirme başlatıldı: {video_url}")
+        print(f"[{session_id}] Video indiriliyor...")
         if not download_file(video_url, video_path):
-            return jsonify({"status": "error", "message": "Video Google Drive'dan indirilemedi. Linki veya ID'yi kontrol edin."}), 500
+            return jsonify({"status": "error", "message": "Video indirilemedi."}), 500
 
-        # 2. ElevenLabs'ten gelen Data (Binary) verisini al
-        if request.data:
+        print(f"[{session_id}] Ses indiriliyor...")
+        if audio_url and audio_url.startswith('http'):
+            r = requests.get(audio_url)
+            with open(audio_path, 'wb') as f:
+                f.write(r.content)
+        elif request.data:
             with open(audio_path, 'wb') as f:
                 f.write(request.data)
-            print(f"[{session_id}] Ses (Data) basarıyla alındı ve kaydedildi.")
-        elif 'audio_file' in request.files:
-            file = request.files['audio_file']
-            file.save(audio_path)
-            print(f"[{session_id}] Ses dosyası multipart olarak alındı.")
         else:
-            return jsonify({"status": "error", "message": "ElevenLabs audio Data verisi ulasmadı!"}), 400
+            # Gelen veriyi string olarak kaydet
+            with open(audio_path, 'wb') as f:
+                f.write(str(audio_url).encode('utf-8'))
 
-        # 3. FFmpeg ile Birleştirme
+        # 3. Esnek FFmpeg Birleştirme
         print(f"[{session_id}] FFmpeg çalıştırılıyor...")
         ffmpeg_cmd = [
             'ffmpeg', '-y',
+            '-probesize', '50M',
+            '-analyzeduration', '100M',
             '-i', video_path,
             '-i', audio_path,
             '-c:v', 'copy',
             '-c:a', 'aac',
+            '-strict', '-2',
             '-map', '0:v:0',
             '-map', '1:a:0',
             '-shortest',
@@ -99,14 +94,13 @@ def process_media():
         result = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         if result.returncode != 0:
-            print(f"[{session_id}] FFmpeg Hata Detayı:\n{result.stderr}")
+            print(f"[{session_id}] FFmpeg Hatası:\n{result.stderr}")
             return jsonify({"status": "error", "message": "FFmpeg hatası", "details": result.stderr}), 500
 
-        print(f"[{session_id}] Başarılı! Video gönderiliyor.")
+        print(f"[{session_id}] Başarılı!")
         return send_file(output_path, mimetype='video/mp4', as_attachment=True, download_name='final_video.mp4')
 
     except Exception as e:
-        print(f"[{session_id}] Sunucu İçi Hata: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
     finally:
