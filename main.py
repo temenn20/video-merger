@@ -88,14 +88,15 @@ def process_video():
 
         # FFmpeg ile birleştirme ve detaylı stderr hata yakalama
         ffmpeg_cmd = [
-            "ffmpeg", "-y", 
-            "-i", input_video, 
-            "-i", input_audio, 
-            "-c:v", "copy", 
-            "-c:a", "aac", 
-            "-shortest", 
-            output_video
-        ]
+    "ffmpeg", "-y",
+    "-i", input_video,
+    "-i", input_audio,
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-c:a", "aac",
+    "-shortest",
+    output_video
+]
         
         process = subprocess.run(
             ffmpeg_cmd, 
